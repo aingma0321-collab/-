@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>메이데이 마이스 (Mayday Mice)</title>
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
+    
+    <style>
+        body { font-family: 'Arial', sans-serif; background: #1a1a1a; color: #ddd; text-align: center; margin: 0; padding: 20px; user-select: none; }
+        
+        .panel { background: linear-gradient(135deg, #3a3a3a, #222); border: 4px solid #555; box-shadow: inset 0 0 15px #000, 5px 5px 15px rgba(0,0,0,0.8); border-radius: 12px; padding: 25px; margin: 20px auto; max-width: 500px; position: relative; }
+        
+        input { padding: 12px; font-size: 18px; border-radius: 5px; border: 2px solid #000; background: #111; color: #0f0; outline: none; text-align: center; font-family: 'Share Tech Mono', monospace; text-transform: uppercase; letter-spacing: 2px; }
+        .main-btn { padding: 12px 25px; font-size: 18px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; box-shadow: 0 4px 0 #111; transition: 0.1s; text-transform: uppercase; margin: 5px; }
+        .main-btn:active { transform: translateY(4px); box-shadow: 0 0 0 #111; }
+        
+        #waiting-room { display: none; background: #2a2a2a; border: 3px dashed #ffcc00; }
+        #wait-code { font-family: 'Share Tech Mono', monospace; font-size: 40px; color: #ffcc00; }
+
+        .role-ui { display: none; }
+        .role-title { font-size: 20px; color: #aaa; border-bottom: 2px solid #444; padding-bottom: 10px; margin-top: 0; }
+
+        /* [조종사] 아날로그 요크 */
+        .joystick-container { position: relative; width: 250px; height: 250px; background: radial-gradient(circle, #333, #111); border-radius: 50%; margin: 20px auto; border: 5px solid #000; box-shadow: inset 0 0 20px #000; overflow: hidden; }
+        .joystick-knob { position: absolute; top: 100px; left: 100px; width: 50px; height: 50px; background: radial-gradient(circle, #aaa, #555); border-radius: 50%; box-shadow: 0 5px 10px rgba(0,0,0,0.8); cursor: grab; transition: transform 0.1s; z-index: 5; }
+        .joystick-knob:active { cursor: grabbing; }
+        .crosshair { position: absolute; width: 100%; height: 2px; background: rgba(255,255,255,0.1); top: 50%; }
+        .crosshair-v { position: absolute; height: 100%; width: 2px; background: rgba(255,255,255,0.1); left: 50%; }
+
+        /* [지도] 레이더 & 블루스크린 */
+        .radar-container { position: relative; width: 350px; height: 350px; margin: 0 auto; background: #000; border-radius: 10px; border: 10px solid #222; box-shadow: inset 0 0 20px #000; overflow: hidden; }
+        #radar-canvas { background: radial-gradient(circle, #003300, #001100); width: 100%; height: 100%; }
+        #map-bsod { display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #0000AA; color: white; padding: 20px; box-sizing: border-box; text-align: left; font-family: 'Consolas', monospace; z-index: 10; }
+        .master-alarm { background: red; color: white; font-weight: bold; text-align: center; padding: 5px; animation: blink 0.5s infinite; font-size: 18px; margin-bottom: 10px; border: 2px solid yellow; }
+        #map-penalty { display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #000; color: red; z-index: 20; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+
+        /* [수리] */
+        .repair-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; margin: 10px 0; }
+        .pad-btn { font-size: 24px; padding: 10px; background: #222; border: 2px solid #555; border-radius: 5px; cursor: pointer; }
+        .pad-btn:active { background: #555; }
+        .wire-btn { padding: 15px; color: white; font-weight: bold; cursor: pointer; border: 3px solid #111; border-radius: 5px; }
+        
+        /* [계기판] TCAS 레이더 및 마스터워닝 */
+        #tcas-canvas { background: #000; border: 5px solid #222; border-radius: 10px; margin-bottom: 15px; box-shadow: inset 0 0 15px #000; }
+        .annunciator-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .warn-light { background: #110000; border: 2px solid #000; padding: 10px; color: #330000; font-family: 'Share Tech Mono'; font-size: 18px; font-weight: bold; border-radius: 5px; height: 40px; display: flex; align-items: center; justify-content: center; }
+        .warn-active { background: #ff0000; color: #fff; text-shadow: 0 0 10px #fff; box-shadow: inset 0 0 15px #a00, 0 0 20px red; border-color: #faa; animation: blink 0.4s infinite; }
+
+        @keyframes blink { 50% { opacity: 0.3; } }
+        
+        #global-timer { position: fixed; top: 10px; right: 20px; font-family: 'Share Tech Mono'; font-size: 30px; color: #ff3333; text-shadow: 0 0 10px red; display: none; z-index: 999; }
+        #gameLog { font-family: 'Share Tech Mono'; background: #000; padding: 15px; color: #0f0; max-width: 500px; margin: 20px auto; height: 100px; overflow-y: auto; text-align: left; font-size: 14px; box-shadow: inset 0 0 10px #000; border: 2px solid #444;}
+    </style>
+</head>
+<body>
+    <div id="global-timer">05:00</div>
+    <h1 style="font-family: 'Share Tech Mono'; color: #fff; letter-spacing: 2px; margin-bottom: 5px;">✈️ MAYDAY MICE ✈️</h1>
+    
+    <div id="lobby" class="panel">
+        <h2 style="margin-top:0;">관제 센터 접속</h2>
+        <button class="main-btn" onclick="createRoom()" style="background: #28a745; color: white; width:100%; margin-bottom:20px;">[ 통신 개설 ] 방 만들기</button>
+        <input type="text" id="roomInput" placeholder="주파수 코드 (4자리)" autocomplete="off" maxlength="4" style="width: 80%;"><br><br>
+        <button class="main-btn" onclick="joinRoom()" style="background: #007bff; color: white; width:100%;">[ 신호 연결 ] 참가하기</button>
+    </div>
+
+    <div id="waiting-room" class="panel">
+        <h2 style="color: #ffcc00; margin-top:0;">⏳ PRE-FLIGHT CHECK</h2>
+        <h1 id="wait-code">ABCD</h1>
+        <p>배정된 임무: <strong id="wait-role" style="color: #0f0; font-size: 22px;"></strong></p>
+        <h3 style="background: #111; padding: 10px;">승무원 탑승: <span id="wait-count" style="color: #fff; font-size: 26px;">1</span> / 5</h3>
+        <button class="main-btn" onclick="fireStartGame()" style="background: red; color: white; width: 100%;">🚨 이륙 승인 (START) 🚨</button>
+    </div>
+
+    <h3 id="room-info" style="color: yellow; display: none; font-family: 'Share Tech Mono';"></h3>
+
+    <!-- 1. 조종사 -->
+    <div id="pilot-ui" class="role-ui panel">
+        <h3 class="role-title">CAPTAIN: FLIGHT YOKE</h3>
+        <p style="color:#aaa; font-size:14px;">동료의 말을 듣고 조종간을 드래그하세요.</p>
+        <div class="joystick-container" id="joystick-bg">
+            <div class="crosshair"></div>
+            <div class="crosshair-v"></div>
+            <div class="joystick-knob" id="joystick-knob"></div>
+        </div>
+        <p style="color:yellow; font-weight:bold;">좌/우: 선회(Bank) | 상/하: 기수(Pitch)</p>
+    </div>
+
+    <!-- 2. 지도 -->
+    <div id="map-ui" class="role-ui panel" style="background: #111;">
+        <h3 class="role-title">NAVIGATOR: RADAR SYSTEM</h3>
+        <div class="radar-container">
+            <canvas id="radar-canvas" width="330" height="330"></canvas>
+            
+            <div id="map-bsod">
+                <div class="master-alarm">*** MASTER ALARM ***</div>
+                <p>A fatal exception 0E has occurred.<br>System halted.</p>
+                <p style="color:yellow;">[수리 쥐에게 다음 오더를 전달하세요]</p>
+                <h3 id="repair-order-text" style="background: white; color: blue; padding: 10px; font-weight: bold; text-align: center;">오더 내용</h3>
+            </div>
+
+            <div id="map-penalty">
+                <h1 style="color: red; animation: blink 0.2s infinite;">❌ SYSTEM DOWN</h1>
+                <p style="color: white;">잘못된 수리로 인한 과부하 발생!</p>
+                <h2 id="penalty-countdown" style="font-size: 40px; color: yellow;">5</h2>
+                <p>초 후 시스템 재부팅...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 3. 수리 -->
+    <div id="repair-ui" class="role-ui panel">
+        <h3 class="role-title">ENGINEER: MAIN PANEL</h3>
+        <div style="border:1px solid #555; padding:10px; margin-bottom:10px; background:#222;">
+            <h4 style="margin:0 0 10px 0; color:#ffeb3b;">1. 와이어 재결속</h4>
+            <button class="wire-btn" style="background: red;" onclick="submitRepair('wire_red')">RED</button>
+            <button class="wire-btn" style="background: blue;" onclick="submitRepair('wire_blue')">BLUE</button>
+            <button class="wire-btn" style="background: green;" onclick="submitRepair('wire_green')">GRN</button>
+        </div>
+        <div style="border:1px solid #555; padding:10px; margin-bottom:10px; background:#222;">
+            <h4 style="margin:0 0 10px 0; color:#ffeb3b;">2. 보안 패드</h4>
+            <div class="repair-grid">
+                <button class="pad-btn" onclick="submitRepair('pad_star')">⭐</button>
+                <button class="pad-btn" onclick="submitRepair('pad_moon')">🌙</button>
+                <button class="pad-btn" onclick="submitRepair('pad_sun')">☀️</button>
+                <button class="pad-btn" onclick="submitRepair('pad_cloud')">☁️</button>
+                <button class="pad-btn" onclick="submitRepair('pad_light')">⚡</button>
+                <button class="pad-btn" onclick="submitRepair('pad_snow')">❄️</button>
+            </div>
+        </div>
+        <div style="border:1px solid #555; padding:10px; margin-bottom:10px; background:#222;">
+            <h4 style="margin:0 0 10px 0; color:#ffeb3b;">3. 통신 모듈 초기화</h4>
+            <button class="main-btn" id="hold-btn" style="background:#555; color:white; width:100%;" onmousedown="startHold()" onmouseup="endHold()" ontouchstart="startHold()" ontouchend="endHold()">[ 3초간 꾹 누르기 ]</button>
+        </div>
+        <div style="border:1px solid #555; padding:10px; background:#222;">
+            <h4 style="margin:0 0 10px 0; color:#ffeb3b;">4. 전력 차단기 (Breaker)</h4>
+            <button class="main-btn" onclick="submitRepair('power_reset')" style="background:#800; color:white;">메인 전력 리셋</button>
+        </div>
+    </div>
+
+    <!-- 4. 계기판 (새로운 TCAS 레이더 캔버스 추가) -->
+    <div id="tcas-ui" class="role-ui panel">
+        <h3 class="role-title">TCAS & ANNUNCIATOR</h3>
+        <canvas id="tcas-canvas" width="350" height="300"></canvas>
+        <div class="annunciator-grid">
+            <div id="warn-bank" class="warn-light">BANK ANGLE</div>
+            <div id="warn-stall" class="warn-light">STALL</div>
+            <div id="warn-terrain" class="warn-light">TERRAIN</div>
+            <div id="warn-over" class="warn-light">OVERSPEED</div>
+        </div>
+    </div>
+
+    <!-- 5. 통신 -->
+    <div id="comm-ui" class="role-ui panel">
+        <h3 class="role-title">COMMS: RADIO</h3>
+        <div style="background:#1a331a; border:5px inset #111; padding:20px; margin-bottom:20px; box-shadow:inset 0 0 15px #000;">
+            <p id="comm-result" style="font-family:'Share Tech Mono'; font-size:24px; color:#44ff44; margin:0;">FREQ: STANDBY...</p>
+        </div>
+        <button id="comm-btn" class="main-btn" style="background:#555; color:white; width:100%; height:60px;" onclick="searchRunway()">주파수 스캔 (5초)</button>
+    </div>
+
+    <div id="gameLog" style="display: none;"></div>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyBdX2nqZYkH_V33s_bV8TRpa-rAIiBWbcQ",
+            authDomain: "test-eb398.firebaseapp.com",
+            databaseURL: "https://test-eb398-default-rtdb.firebaseio.com",
+            projectId: "test-eb398",
+            storageBucket: "test-eb398.firebasestorage.app",
+            messagingSenderId: "891253595501",
+            appId: "1:891253595501:web:3ddde2a9c70708c9100e64"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        const ALL_ROLES = ['조종사_맹인쥐', '지도_항법쥐', '수리_엔지니어쥐', '계기판_TCAS쥐', '관제_통신쥐'];
+        let myRoom = '';
+        let myRole = '';
+        let roomRef = null;
+        let myPlane = { x: 165, y: 165, alt: 5000, bank: 0, pitch: 0 };
+        
+        const REPAIR_TASKS = [
+            { id: 'wire_red', text: '빨간색(RED) 전선을 끊어!' },
+            { id: 'wire_blue', text: '파란색(BLUE) 전선을 끊어!' },
+            { id: 'wire_green', text: '초록색(GREEN) 전선을 끊어!' },
+            { id: 'pad_star', text: '보안 패드에서 [ ⭐ 별 ] 을 눌러!' },
+            { id: 'pad_moon', text: '보안 패드에서 [ 🌙 달 ] 을 눌러!' },
+            { id: 'pad_light', text: '보안 패드에서 [ ⚡ 번개 ] 를 눌러!' },
+            { id: 'comms_hold', text: '통신 모듈 버튼을 3초간 꾹 눌러!' },
+            { id: 'power_reset', text: '메인 전력 리셋 버튼을 눌러!' }
+        ];
+
+        let globalTimerInterval;
+
+        function log(msg) {
+            const logBox = document.getElementById('gameLog');
+            logBox.innerHTML = `<div>${msg}</div>` + logBox.innerHTML;
+        }
+
+        function shuffle(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+            return array;
+        }
+
+        function createRoom() {
+            const code = Math.random().toString(36).substring(2, 6).toUpperCase();
+            db.ref('rooms/' + code).set({
+                gameState: 'waiting', endTime: 0, roles: shuffle([...ALL_ROLES]),
+                playerCount: 0, mapStatus: 'normal', repairAnswer: '', myPlane: myPlane
+            }).then(() => {
+                document.getElementById('roomInput').value = code;
+                joinRoom(code);
+            });
+        }
+
+        function joinRoom(autoCode) {
+            myRoom = autoCode || document.getElementById('roomInput').value.toUpperCase();
+            if (!myRoom) return alert("방 코드를 입력하세요!");
+            roomRef = db.ref('rooms/' + myRoom);
+            roomRef.get().then((snapshot) => {
+                if (!snapshot.exists()) return alert("방 코드가 틀렸거나 없습니다!");
+                let data = snapshot.val();
+                if (data.gameState !== 'waiting') return alert("이미 게임이 시작되었습니다!");
+                if (!data.roles || data.roles.length === 0) return alert("방이 꽉 찼습니다! (5명)");
+
+                let availableRoles = data.roles;
+                myRole = availableRoles.pop();
+                roomRef.update({ roles: availableRoles, playerCount: (data.playerCount || 0) + 1 }).then(() => enterWaitingRoom());
+            });
+        }
+
+        function enterWaitingRoom() {
+            document.getElementById('lobby').style.display = 'none';
+            document.getElementById('waiting-room').style.display = 'block';
+            document.getElementById('wait-code').innerText = myRoom;
+            document.getElementById('wait-role').innerText = myRole;
+            roomRef.child('playerCount').on('value', snap => { document.getElementById('wait-count').innerText = snap.val() || 1; });
+            roomRef.child('gameState').on('value', snap => { if (snap.val() === 'playing') launchGame(); });
+        }
+
+        function fireStartGame() { roomRef.update({ gameState: 'playing', endTime: Date.now() + 300000 }); }
+
+        function launchGame() {
+            document.getElementById('waiting-room').style.display = 'none';
+            document.getElementById('room-info').style.display = 'block';
+            document.getElementById('gameLog').style.display = 'block';
+            document.getElementById('global-timer').style.display = 'block';
+            document.getElementById('room-info').innerText = `[ FREQ: ${myRoom} ] ROLE: ${myRole}`;
+            log(`SYSTEM: FLIGHT SEQUENCE INITIATED. 5 MINS REMAIN.`);
+
+            if (myRole === '조종사_맹인쥐') { document.getElementById('pilot-ui').style.display = 'block'; setupJoystick(); }
+            if (myRole === '지도_항법쥐') document.getElementById('map-ui').style.display = 'block';
+            if (myRole === '수리_엔지니어쥐') document.getElementById('repair-ui').style.display = 'block';
+            if (myRole === '계기판_TCAS쥐') document.getElementById('tcas-ui').style.display = 'block';
+            if (myRole === '관제_통신쥐') document.getElementById('comm-ui').style.display = 'block';
+
+            startGameListeners();
+        }
+
+        function startGameListeners() {
+            roomRef.child('endTime').once('value', snap => {
+                const endTime = snap.val();
+                globalTimerInterval = setInterval(() => {
+                    const remain = Math.max(0, Math.floor((endTime - Date.now()) / 1000));
+                    const mins = String(Math.floor(remain / 60)).padStart(2, '0');
+                    const secs = String(remain % 60).padStart(2, '0');
+                    document.getElementById('global-timer').innerText = `${mins}:${secs}`;
+                    if (remain <= 0) { clearInterval(globalTimerInterval); alert("연료 고갈! 추락했습니다!"); window.location.reload(); }
+                }, 1000);
+            });
+
+            roomRef.child('myPlane').on('value', snap => {
+                const data = snap.val();
+                if (data) {
+                    myPlane = data;
+                    if (myRole === '지도_항법쥐') drawMap();
+                    if (myRole === '계기판_TCAS쥐') drawTCAS(); // TCAS 렌더링 호출
+                }
+            });
+
+            roomRef.on('value', snap => {
+                const data = snap.val();
+                if (!data) return;
+                if (myRole === '지도_항법쥐') {
+                    const bsod = document.getElementById('map-bsod');
+                    const penalty = document.getElementById('map-penalty');
+                    bsod.style.display = 'none'; penalty.style.display = 'none';
+                    if (data.mapStatus === 'error') {
+                        bsod.style.display = 'block';
+                        const task = REPAIR_TASKS.find(t => t.id === data.repairAnswer);
+                        document.getElementById('repair-order-text').innerText = task ? task.text : '시스템 오류!';
+                    } 
+                    else if (data.mapStatus === 'penalty') penalty.style.display = 'flex';
+                }
+            });
+
+            if (myRole === '지도_항법쥐') {
+                setInterval(() => {
+                    roomRef.child('mapStatus').once('value', snap => {
+                        if (snap.val() === 'normal' && Math.random() < 0.6) {
+                            const randomTask = REPAIR_TASKS[Math.floor(Math.random() * REPAIR_TASKS.length)];
+                            roomRef.update({ mapStatus: 'error', repairAnswer: randomTask.id });
+                        }
+                    });
+                }, 15000); 
+            }
+        }
+
+        // ================= 조종사 요크 =================
+        function setupJoystick() {
+            const knob = document.getElementById('joystick-knob');
+            const bg = document.getElementById('joystick-bg');
+            let isDragging = false;
+            let center = { x: 125, y: 125 }; 
+            
+            function moveKnob(clientX, clientY) {
+                if (!isDragging) return;
+                const rect = bg.getBoundingClientRect();
+                let x = clientX - rect.left, y = clientY - rect.top;
+                let dx = x - center.x, dy = y - center.y;
+                const distance = Math.sqrt(dx*dx + dy*dy);
+                if (distance > 100) { dx = (dx/distance)*100; dy = (dy/distance)*100; }
+                
+                knob.style.transform = `translate(${dx}px, ${dy}px)`;
+                myPlane.bank = Math.round((dx / 100) * 30);  
+                myPlane.pitch = Math.round((dy / 100) * -20); 
+                myPlane.x += (myPlane.bank / 10);
+                myPlane.alt += (myPlane.pitch * 5);
+                roomRef.child('myPlane').set(myPlane);
+            }
+            bg.addEventListener('mousedown', () => isDragging = true);
+            window.addEventListener('mousemove', e => moveKnob(e.clientX, e.clientY));
+            window.addEventListener('mouseup', () => {
+                if (isDragging) { isDragging = false; knob.style.transform = `translate(0px, 0px)`; myPlane.bank = 0; myPlane.pitch = 0; roomRef.child('myPlane').set(myPlane); }
+            });
+            bg.addEventListener('touchstart', () => isDragging = true);
+            window.addEventListener('touchmove', e => moveKnob(e.touches[0].clientX, e.touches[0].clientY));
+            window.addEventListener('touchend', () => {
+                isDragging = false; knob.style.transform = `translate(0px, 0px)`; myPlane.bank = 0; myPlane.pitch = 0; roomRef.child('myPlane').set(myPlane);
+            });
+        }
+
+        function drawMap() {
+            const canvas = document.getElementById('radar-canvas');
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height); 
+            ctx.fillStyle = '#0f0'; ctx.fillRect(myPlane.x, myPlane.y, 8, 8);
+        }
+
+        // ================= ★ 계기판 쥐 TCAS 레이더 렌더링 ★ =================
+        function drawTCAS() {
+            const canvas = document.getElementById('tcas-canvas');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 1. TCAS 동심원 (Range Rings)
+            ctx.strokeStyle = '#555';
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath(); ctx.arc(cx, cy, 60, 0, Math.PI * 2); ctx.stroke();
+            ctx.beginPath(); ctx.arc(cx, cy, 120, 0, Math.PI * 2); ctx.stroke();
+            ctx.setLineDash([]);
+            
+            // 거리 텍스트
+            ctx.fillStyle = '#aaa';
+            ctx.font = '12px Share Tech Mono';
+            ctx.fillText('2 NM', cx + 65, cy);
+            ctx.fillText('4 NM', cx + 125, cy);
+
+            // 2. 가상의 주변 트래픽 (조종사가 기수를 돌리면 반대로 밀려나며 역동적인 느낌을 줌)
+            // RA (Resolution Advisory - 빨간 네모)
+            let raX = cx - 50 - myPlane.bank * 2;
+            let raY = cy - 40 + myPlane.pitch * 2;
+            ctx.fillStyle = 'red';
+            ctx.fillRect(raX - 6, raY - 6, 12, 12);
+            ctx.fillStyle = 'white';
+            ctx.fillText('-04', raX + 10, raY + 5); // 400ft 아래
+
+            // TA (Traffic Advisory - 노란 동그라미)
+            let taX = cx + 70 - myPlane.bank * 1.5;
+            let taY = cy + 60 + myPlane.pitch * 1.5;
+            ctx.fillStyle = 'yellow';
+            ctx.beginPath(); ctx.arc(taX, taY, 6, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = 'white';
+            ctx.fillText('+08', taX + 10, taY + 5); // 800ft 위
+
+            // 3. 내 비행기 (중앙 시안색 아이콘 - 회전 적용)
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.rotate((myPlane.bank * Math.PI) / 180); // 선회각(Bank)에 맞춰 비행기 아이콘 회전
+            
+            ctx.strokeStyle = '#00ffff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(0, -15);
+            ctx.lineTo(15, 5);
+            ctx.lineTo(5, 5);
+            ctx.lineTo(5, 15);
+            ctx.lineTo(-5, 15);
+            ctx.lineTo(-5, 5);
+            ctx.lineTo(-15, 5);
+            ctx.closePath();
+            ctx.stroke();
+            ctx.restore();
+
+            // 4. 디지털 텍스트 오버레이 (고도, 자세 데이터)
+            ctx.fillStyle = '#0f0';
+            ctx.font = '16px Share Tech Mono';
+            ctx.fillText(`ALT  : ${myPlane.alt} FT`, 10, 25);
+            ctx.fillText(`PITCH: ${myPlane.pitch}°`, 10, 45);
+            ctx.fillText(`BANK : ${myPlane.bank}°`, 10, 65);
+            
+            ctx.fillStyle = 'cyan';
+            ctx.fillText(`TCAS TA/RA`, 10, canvas.height - 15);
+
+            // 5. 경고등 체크 호출
+            checkWarnings();
+        }
+
+        // 마스터 워닝 업데이트
+        function checkWarnings() {
+            document.getElementById('warn-bank').className = Math.abs(myPlane.bank) >= 20 ? 'warn-light warn-active' : 'warn-light';
+            document.getElementById('warn-stall').className = myPlane.pitch >= 15 ? 'warn-light warn-active' : 'warn-light';
+            document.getElementById('warn-terrain').className = myPlane.alt <= 1500 ? 'warn-light warn-active' : 'warn-light';
+            document.getElementById('warn-over').className = myPlane.pitch <= -15 ? 'warn-light warn-active' : 'warn-light';
+        }
+
+        let holdTimer = null;
+        function startHold() {
+            const btn = document.getElementById('hold-btn');
+            btn.innerText = "충전중..."; btn.style.background = "#ff9900";
+            holdTimer = setTimeout(() => { btn.innerText = "완료!"; btn.style.background = "lime"; submitRepair('comms_hold'); }, 3000);
+        }
+        function endHold() {
+            clearTimeout(holdTimer);
+            const btn = document.getElementById('hold-btn');
+            if(btn.innerText !== "완료!") { btn.innerText = "[ 3초간 꾹 누르기 ]"; btn.style.background = "#555"; }
+        }
+
+        function submitRepair(attemptedId) {
+            roomRef.once('value', snap => {
+                const data = snap.val();
+                if (data.mapStatus !== 'error') return; 
+                if (data.repairAnswer === attemptedId) {
+                    roomRef.child('mapStatus').set('normal');
+                    log(`SYS: ${attemptedId} 수리 성공!`);
+                } else {
+                    log(`SYS: 잘못된 조작! 과부하 발생!`);
+                    roomRef.child('mapStatus').set('penalty');
+                    let pTime = 5;
+                    document.getElementById('penalty-countdown').innerText = pTime;
+                    const pInterval = setInterval(() => {
+                        pTime--;
+                        document.getElementById('penalty-countdown').innerText = pTime;
+                        if(pTime <= 0) { clearInterval(pInterval); roomRef.child('mapStatus').set('normal'); }
+                    }, 1000);
+                }
+            });
+        }
+
+        function searchRunway() {
+            const btn = document.getElementById('comm-btn');
+            const lcd = document.getElementById('comm-result');
+            btn.disabled = true; lcd.innerText = "FREQ: SCANNING..."; lcd.style.color = "#ffaa00"; 
+            setTimeout(() => {
+                btn.disabled = false;
+                if (Math.random() < 0.2) { lcd.innerText = "FOUND: RWY 32R (GMP)"; lcd.style.color = "#00ffff"; } 
+                else { lcd.innerText = "ERROR: NO SIGNAL"; lcd.style.color = "red"; }
+            }, 5000);
+        }
+    </script>
+</body>
+</html>
