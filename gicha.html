@@ -1,0 +1,225 @@
+import pygame
+import random
+import time
+import math
+
+# --- 게임 초기화 ---
+pygame.init()
+WIDTH, HEIGHT = 400, 700
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("좀비 아포칼립스 무한 열차 - 모바일 프로토타입")
+
+try:
+    font = pygame.font.SysFont("malgun gothic", 18)
+except:
+    font = pygame.font.SysFont("apple gothic", 18)
+
+# --- 색상 설정 ---
+WHITE, BLACK = (255, 255, 255), (0, 0, 0)
+TRAIN_COLOR = (120, 120, 120)
+CONTROL_PANEL_COLOR = (50, 150, 255)
+PLAYER_COLOR = (255, 50, 50)
+BG_COLOR = (40, 60, 40)
+TRACK_COLOR = (80, 80, 80)
+TIE_COLOR = (139, 69, 19)
+STATION_COLOR = (200, 150, 50)
+
+# --- 가상 조이스틱 클래스 ---
+class VirtualJoystick:
+    def __init__(self, x, y, radius):
+        self.base_pos = pygame.math.Vector2(x, y)
+        self.stick_pos = pygame.math.Vector2(x, y)
+        self.radius = radius
+        self.active = False
+
+    def update(self, mouse_pos, mouse_pressed):
+        mouse_vec = pygame.math.Vector2(mouse_pos)
+        
+        if mouse_pressed[0]:
+            if not self.active and self.base_pos.distance_to(mouse_vec) <= self.radius * 1.5:
+                self.active = True
+                
+            if self.active:
+                self.stick_pos = mouse_vec
+                if self.base_pos.distance_to(self.stick_pos) > self.radius:
+                    direction = (self.stick_pos - self.base_pos).normalize()
+                    self.stick_pos = self.base_pos + direction * self.radius
+        else:
+            self.active = False
+            self.stick_pos = self.base_pos
+
+    def get_movement(self):
+        if self.active:
+            vec = self.stick_pos - self.base_pos
+            if vec.length() > 0:
+                return vec / self.radius
+        return pygame.math.Vector2(0, 0)
+
+    def draw(self, surface):
+        pygame.draw.circle(surface, (150, 150, 150), (int(self.base_pos.x), int(self.base_pos.y)), self.radius, 2)
+        pygame.draw.circle(surface, (200, 200, 200), (int(self.stick_pos.x), int(self.stick_pos.y)), int(self.radius * 0.5))
+
+
+class GameEngine:
+    def __init__(self):
+        self.train_rect = pygame.Rect(120, 250, 160, 350)
+        self.control_rect = pygame.Rect(120, 250, 160, 50)
+        
+        self.player_x, self.player_y = 200, 450
+        self.player_speed = 4.0
+
+        self.is_moving = False
+        self.train_speed = 0.0
+        self.max_speed = 8.0
+        self.inertia = 0.05
+        self.acceleration = 0.1
+
+        self.food = 10
+        self.water = 10
+        self.fuel = 20.0
+
+        self.scroll_y = 0.0
+        self.last_tick_time = time.time()
+        self.station = None
+        self.scenery = []
+        for _ in range(15):
+            self.spawn_tree(random.randint(0, HEIGHT))
+
+        self.joystick = VirtualJoystick(80, 580, 50)
+        self.action_btn_rect = pygame.Rect(WIDTH - 120, 540, 90, 90)
+
+    def spawn_tree(self, start_y):
+        x = random.randint(0, 80) if random.random() < 0.5 else random.randint(300, WIDTH)
+        self.scenery.append(pygame.Rect(x, start_y, 30, 30))
+
+    def update(self, mouse_pos, mouse_pressed, mouse_just_pressed):
+        self.joystick.update(mouse_pos, mouse_pressed)
+        move_vec = self.joystick.get_movement()
+        
+        new_x = self.player_x + move_vec.x * self.player_speed
+        new_y = self.player_y + move_vec.y * self.player_speed
+
+        if self.train_rect.collidepoint(new_x, self.player_y):
+            self.player_x = new_x
+        if self.train_rect.collidepoint(self.player_x, new_y):
+            self.player_y = new_y
+
+        player_rect = pygame.Rect(self.player_x - 12, self.player_y - 12, 24, 24)
+        is_near_control = player_rect.colliderect(self.control_rect)
+        
+        if is_near_control and mouse_just_pressed:
+            if self.action_btn_rect.collidepoint(mouse_pos):
+                self.is_moving = not self.is_moving
+
+        if self.is_moving:
+            if self.train_speed < self.max_speed:
+                self.train_speed += self.acceleration
+            if self.fuel > 0:
+                self.fuel -= 0.02
+            else:
+                self.fuel = 0
+                self.is_moving = False
+        else:
+            if self.train_speed > 0:
+                self.train_speed -= self.inertia
+                if self.train_speed < 0:
+                    self.train_speed = 0
+
+        if self.train_speed > 0:
+            self.scroll_y += self.train_speed
+            
+            for tree in self.scenery:
+                tree.y += self.train_speed
+            self.scenery = [t for t in self.scenery if t.y < HEIGHT + 50]
+            while len(self.scenery) < 15:
+                self.spawn_tree(random.randint(-50, -10))
+
+            if self.station:
+                self.station["rect"].y += self.train_speed
+                if self.station["rect"].y > HEIGHT + 100:
+                    self.station = None
+
+        current_time = time.time()
+        if current_time - self.last_tick_time >= 5.0 and self.is_moving:
+            self.last_tick_time = current_time
+            if self.station is None:
+                roll_small = random.random() < 0.30
+                roll_large = random.random() < 0.05
+                if roll_small and roll_large: roll_large = False
+                
+                if roll_small:
+                    self.station = {"name": "소규모", "rect": pygame.Rect(290, -150, 100, 100)}
+                elif roll_large:
+                    self.station = {"name": "대규모", "rect": pygame.Rect(290, -200, 140, 140)}
+
+    def draw(self):
+        screen.fill(BG_COLOR)
+
+        pygame.draw.rect(screen, TRACK_COLOR, (140, 0, 10, HEIGHT))
+        pygame.draw.rect(screen, TRACK_COLOR, (250, 0, 10, HEIGHT))
+        
+        tie_spacing = 40
+        offset = int(self.scroll_y) % tie_spacing
+        for y in range(-tie_spacing + offset, HEIGHT, tie_spacing):
+            pygame.draw.rect(screen, TIE_COLOR, (130, y, 140, 10))
+
+        for tree in self.scenery:
+            pygame.draw.ellipse(screen, (20, 100, 20), tree)
+
+        if self.station:
+            pygame.draw.rect(screen, STATION_COLOR, self.station["rect"])
+            st_text = font.render(self.station["name"], True, BLACK)
+            screen.blit(st_text, (self.station["rect"].x, self.station["rect"].y - 25))
+
+        pygame.draw.rect(screen, TRAIN_COLOR, self.train_rect)
+        pygame.draw.rect(screen, CONTROL_PANEL_COLOR, self.control_rect)
+        pygame.draw.circle(screen, PLAYER_COLOR, (int(self.player_x), int(self.player_y)), 12)
+
+        ui_food = font.render(f"🍔: {self.food}", True, WHITE)
+        ui_water = font.render(f"💧: {self.water}", True, WHITE)
+        ui_fuel = font.render(f"⛽: {self.fuel:.1f}", True, WHITE)
+        screen.blit(ui_food, (10, 10))
+        screen.blit(ui_water, (70, 10))
+        screen.blit(ui_fuel, (130, 10))
+
+        self.joystick.draw(screen)
+
+        player_rect = pygame.Rect(self.player_x - 12, self.player_y - 12, 24, 24)
+        if player_rect.colliderect(self.control_rect):
+            btn_color = (255, 100, 100) if self.is_moving else (100, 255, 100)
+            pygame.draw.rect(screen, btn_color, self.action_btn_rect, border_radius=15)
+            
+            btn_text = font.render("정지" if self.is_moving else "출발", True, BLACK)
+            text_rect = btn_text.get_rect(center=self.action_btn_rect.center)
+            screen.blit(btn_text, text_rect)
+
+        pygame.display.flip()
+
+def main():
+    engine = GameEngine()
+    clock = pygame.time.Clock()
+    running = True
+    
+    mouse_was_pressed = False
+
+    while running:
+        mouse_pos = pygame.mouse.get_pos()
+        mouse_pressed = pygame.mouse.get_pressed()
+        
+        mouse_just_pressed = False
+        if mouse_pressed[0] and not mouse_was_pressed:
+            mouse_just_pressed = True
+        mouse_was_pressed = mouse_pressed[0]
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+        engine.update(mouse_pos, mouse_pressed, mouse_just_pressed)
+        engine.draw()
+        clock.tick(60)
+
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
