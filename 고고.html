@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>좀비 아포칼립스 무한 열차</title>
+    <style>
+        body {
+            margin: 0; padding: 0; background-color: #1a1a1a;
+            display: flex; justify-content: center; align-items: center;
+            height: 100vh; overflow: hidden; touch-action: none;
+            font-family: 'Malgun Gothic', sans-serif;
+        }
+        #gameContainer { position: relative; width: 400px; height: 700px; }
+        canvas { background-color: #283c28; width: 100%; height: 100%; box-shadow: 0 0 15px rgba(0,0,0,0.8); }
+        .overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85); display: none; flex-direction: column;
+            justify-content: center; align-items: center; color: white; z-index: 10;
+        }
+        .menu-box { background: #333; padding: 20px; border-radius: 10px; width: 80%; border: 2px solid #555; }
+        .upg-btn {
+            background: #50a0ff; border: none; padding: 10px; margin: 5px 0;
+            width: 100%; border-radius: 5px; color: white; font-weight: bold; cursor: pointer;
+        }
+        .upg-btn:active { background: #3080df; }
+        #btnOpenMenu {
+            position: absolute; top: 10px; right: 10px; background: #ffaa00; border: none; padding: 8px 12px;
+            border-radius: 8px; font-weight: bold; cursor: pointer; z-index: 5;
+        }
+        #btnShelter {
+            position: absolute; top: 60px; right: 10px; background: #ff4444; color: white; border: none; padding: 8px 12px;
+            border-radius: 8px; font-weight: bold; cursor: pointer; z-index: 5; display: none;
+            box-shadow: 0 0 10px red; animation: pulse 1s infinite;
+        }
+        @keyframes pulse { 50% { transform: scale(1.05); } }
+        #timeUi {
+            position: absolute; top: 10px; left: 10px; color: white; text-shadow: 1px 1px 2px black;
+            font-size: 16px; font-weight: bold; z-index: 5; pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+<div id="gameContainer">
+    <canvas id="gameCanvas" width="400" height="700"></canvas>
+    
+    <div id="timeUi"></div>
+    <button id="btnShelter" onclick="findShelter()">피난처 찾기<br><small>(연료 -500)</small></button>
+    <button id="btnOpenMenu" onclick="openUpgradeMenu()">업그레이드</button>
+
+    <div id="upgradeMenu" class="overlay">
+        <div class="menu-box">
+            <h2 style="margin-top:0; text-align:center; color:#ffaa00;">기차 업그레이드</h2>
+            <div id="upgStatus" style="font-size:14px; margin-bottom:15px; color:#ddd;"></div>
+            <button class="upg-btn" onclick="buyUpgrade(1)">1. 식량 저장소 증가 (나무10, 돌5)</button>
+            <button class="upg-btn" onclick="buyUpgrade(2)">2. 최대 연료 증가 (나무20, 돌15, 철5)</button>
+            <button class="upg-btn" onclick="buyUpgrade(3)">3. 기차 무장 (나무30, 돌30, 철20)</button>
+            <button style="background:#888;" class="upg-btn" onclick="closeUpgradeMenu()">닫기</button>
+        </div>
+    </div>
+
+    <div id="gameOverScreen" class="overlay">
+        <h1 style="color:#ff4444; font-size:40px;">GAME OVER</h1>
+        <p>기차가 좀비들에게 파괴되었습니다.</p>
+        <button class="upg-btn" style="width:50%; margin-top:20px;" onclick="resetGame()">다시 시작</button>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const WIDTH = 400; const HEIGHT = 700;
+    
+    // --- 시스템 및 세이브 데이터 ---
+    const CYCLE_MS = 30 * 60 * 1000; // 30분 (1,800,000ms)
+    
+    let gameState = {
+        fuel: 300.0, maxFuel: 300.0,
+        food: 10, water: 10, wood: 0, stone: 0, iron: 0,
+        trainHp: 10000.0, maxHp: 10000.0,
+        foodCapacity: 10, trainWeapons: 0,
+        elapsedTimeMs: 0, lastSavedTime: Date.now()
+    };
+
+    function loadGame() {
+        let saved = localStorage.getItem('zombieTrainSave');
+        if (saved) {
+            let parsed = JSON.parse(saved);
+            gameState = { ...gameState, ...parsed };
+            // 오프라인 시간 처리 (태양광 발전 30분당 10 연료)
+            let offlineMs = Date.now() - gameState.lastSavedTime;
+            gameState.elapsedTimeMs += offlineMs;
+            let solarFuel = (offlineMs / CYCLE_MS) * 10;
+            gameState.fuel = Math.min(gameState.maxFuel, gameState.fuel + solarFuel);
+        }
+    }
+    
+    function saveGame() {
+        gameState.lastSavedTime = Date.now();
+        localStorage.setItem('zombieTrainSave', JSON.stringify(gameState));
+    }
+    
+    function resetGame() {
+        localStorage.removeItem('zombieTrainSave');
+        location.reload();
+    }
+
+    loadGame(); // 시작 시 세이브 로드
+
+    // --- 기차 및 물리 엔진 ---
+    // 가로 길이 축소 (폭 80), 높이 140
+    let trainW = 80; let trainH = 140;
+    let player = { x: 200, y: 300, radius: 8, speed: 4.0, car: 1 };
+    
+    let isMoving = false;
+    let trainSpeed = 0.0;
+    const maxSpeed = 8.0;
+    const acceleration = 0.2;
+    // 💡 1초 만에 멈추도록 브레이크 성능 조정 (8.0 / 60프레임 ≈ 0.133)
+    const inertia = 0.134; 
+    
+    let scrollY = 0.0;
+    let lastTickTime = performance.now();
+    let saveTimer = 0;
+    
+    let station = null;
+    let scenery = [];
+    let zombies = [];
+    let isSafeZone = false;
+    
+    // UI 컨트롤
+    let actionBtn = { x: WIDTH - 110, y: 550, w: 90, h: 90, radius: 15 };
+    let exploreBtn = { x: 230, y: 350, w: 100, h: 60, radius: 10 };
+    let joy = { baseX: 80, baseY: 580, stickX: 80, stickY: 580, radius: 40, active: false, pointerId: null };
+
+    // 곡선 철로 계산 (y축 기준 x위치 반환)
+    function getTrackX(y) {
+        return WIDTH / 2 + Math.sin((y + scrollY) * 0.003) * 60;
+    }
+
+    for (let i = 0; i < 20; i++) spawnTree(Math.random() * HEIGHT);
+    function spawnTree(startY) {
+        let x = Math.random() < 0.5 ? Math.random() * 80 : WIDTH - 80 + Math.random() * 80;
+        scenery.push({ x: x, y: startY, w: 25, h: 25 });
+    }
+
+    // --- 시간 및 이벤트 로직 ---
+    function getTimeInfo() {
+        let totalCycles = Math.floor(gameState.elapsedTimeMs / CYCLE_MS);
+        let isNight = (totalCycles % 2 === 1);
+        let dayNumber = Math.floor(totalCycles / 2) + 1;
+        let isFogDay = isNight && (dayNumber > 0 && dayNumber % 7 === 0);
+        let isNextDayAfterFog = !isNight && (dayNumber > 1 && dayNumber % 7 === 1);
+        return { isNight, dayNumber, isFogDay, isNextDayAfterFog, cycleProgress: (gameState.elapsedTimeMs % CYCLE_MS) / CYCLE_MS };
+    }
+
+    function findShelter() {
+        if (gameState.fuel >= 500 && !station) {
+            gameState.fuel -= 500;
+            // 화면 바로 위쪽(진행 방향)에 피난처 생성
+            station = { name: "피난처 (안전구역)", y: 100, h: 120, type: 'shelter' };
+            alert("전방에 피난처를 발견했습니다! 기차를 멈추세요.");
+        } else {
+            alert("연료가 부족하거나 이미 구역이 있습니다.");
+        }
+    }
+
+    // --- HTML UI 로직 ---
+    function openUpgradeMenu() {
+        document.getElementById('upgradeMenu').style.display = 'flex';
+        document.getElementById('upgStatus').innerHTML = 
+            `보유 자원: 🪵${gameState.wood} / 🪨${gameState.stone} / ⚙️${gameState.iron}<br>` +
+            `최대 연료: ${gameState.maxFuel} / 무장 레벨: ${gameState.trainWeapons}`;
+    }
+    function closeUpgradeMenu() { document.getElementById('upgradeMenu').style.display = 'none'; }
+    function buyUpgrade(type) {
+        if (type === 1 && gameState.wood >= 10 && gameState.stone >= 5) {
+            gameState.wood -= 10; gameState.stone -= 5; gameState.foodCapacity += 5;
+        } else if (type === 2 && gameState.wood >= 20 && gameState.stone >= 15 && gameState.iron >= 5) {
+            if (gameState.maxFuel < 2000) {
+                gameState.wood -= 20; gameState.stone -= 15; gameState.iron -= 5;
+                gameState.maxFuel = Math.min(2000, gameState.maxFuel + 200);
+            } else { alert("연료통이 이미 최대치(2000)입니다."); return; }
+        } else if (type === 3 && gameState.wood >= 30 && gameState.stone >= 30 && gameState.iron >= 20) {
+            gameState.wood -= 30; gameState.stone -= 30; gameState.iron -= 20; gameState.trainWeapons += 1;
+        } else { alert("자원이 부족합니다."); return; }
+        openUpgradeMenu(); saveGame();
+    }
+
+    // --- 입력 처리 ---
+    let pointers = {};
+    canvas.addEventListener('pointerdown', (e) => {
+        if (gameState.trainHp <= 0) return;
+        pointers[e.pointerId] = e;
+        let rect = canvas.getBoundingClientRect();
+        let x = (e.clientX - rect.left) * (canvas.width / rect.width);
+        let y = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+        // 정차 및 파밍
+        let c1x = getTrackX(250); let c1y = 250;
+        let isParked = (!isMoving && trainSpeed === 0 && station && 
+                        c1y >= station.y && c1y <= station.y + station.h);
+        
+        if (isParked && x >= exploreBtn.x && x <= exploreBtn.x + exploreBtn.w && y >= exploreBtn.y && y <= exploreBtn.y + exploreBtn.h) {
+            if (station.type === 'shelter') {
+                isSafeZone = true; zombies = [];
+                alert("🚪 피난처에 정박했습니다. 안개의 날 동안 안전합니다.");
+            } else {
+                let gainedFuel = Math.floor(Math.random() * 21) + 20;
+                let gainedWood = Math.floor(Math.random() * 10) + 5;
+                let gainedStone = Math.floor(Math.random() * 7) + 3;
+                let gainedIron = Math.floor(Math.random() * 5);
+                
+                gameState.fuel = Math.min(gameState.maxFuel, gameState.fuel + gainedFuel);
+                gameState.wood += gainedWood; gameState.stone += gainedStone; gameState.iron += gainedIron;
+                
+                // 생존자 이벤트
+                let timeInfo = getTimeInfo();
+                let infectionChance = timeInfo.isNextDayAfterFog ? 0.8 : 0.2;
+                if (Math.random() < 0.3) {
+                    let hasBite = Math.random() < infectionChance;
+                    let msg = hasBite ? "생존자의 몸에 끔찍한 물린 자국이 있습니다! (감염 위험 80%)" : "생존자가 다쳤지만 물린 자국은 없습니다.";
+                    if (confirm(`생존자 발견!\n${msg}\n구출하시겠습니까? (취소 시 아이템만 강탈)`)) {
+                        if (hasBite) { alert("생존자가 좀비로 변해 기차를 공격했습니다! 체력 -500"); gameState.trainHp -= 500; }
+                        else { alert("생존자를 구출했습니다!"); }
+                    } else { alert("생존자를 버리고 자원을 추가로 챙겼습니다."); gameState.food += 3; }
+                }
+                alert(`🚪 탐색 완료!\n[획득] 연료 +${gainedFuel} / 🪵+${gainedWood} / 🪨+${gainedStone}`);
+            }
+            station = null; return;
+        }
+
+        // 출발/브레이크 버튼
+        let controlArea = { x: c1x - trainW/2, y: c1y - trainH/2, w: trainW, h: 40 };
+        let isNearControl = (player.car === 1 && player.y < c1y - trainH/2 + 50);
+        
+        if (isNearControl && x >= actionBtn.x && x <= actionBtn.x + actionBtn.w && y >= actionBtn.y && y <= actionBtn.y + actionBtn.h) {
+            isMoving = !isMoving;
+            if (isMoving) isSafeZone = false; // 출발하면 안전구역 해제
+            return; 
+        }
+
+        // 조이스틱
+        let dist = Math.hypot(x - joy.baseX, y - joy.baseY);
+        if (!joy.active && dist <= joy.radius * 1.5) {
+            joy.active = true; joy.pointerId = e.pointerId; updateJoystick(x, y);
+        }
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+        if (joy.active && e.pointerId === joy.pointerId) {
+            let rect = canvas.getBoundingClientRect();
+            let x = (e.clientX - rect.left) * (canvas.width / rect.width);
+            let y = (e.clientY - rect.top) * (canvas.height / rect.height);
+            updateJoystick(x, y);
+        }
+    });
+    
+    function handlePointerEnd(e) {
+        if (joy.pointerId === e.pointerId) { joy.active = false; joy.stickX = joy.baseX; joy.stickY = joy.baseY; joy.pointerId = null; }
+    }
+    canvas.addEventListener('pointerup', handlePointerEnd); canvas.addEventListener('pointercancel', handlePointerEnd);
+
+    function updateJoystick(x, y) {
+        let dx = x - joy.baseX; let dy = y - joy.baseY;
+        let dist = Math.hypot(dx, dy);
+        if (dist > joy.radius) {
+            let angle = Math.atan2(dy, dx);
+            joy.stickX = joy.baseX + Math.cos(angle) * joy.radius; joy.stickY = joy.baseY + Math.sin(angle) * joy.radius;
+        } else { joy.stickX = x; joy.stickY = y; }
+    }
+
+    // --- 게임 루프 (업데이트) ---
+    function update() {
+        if (gameState.trainHp <= 0) {
+            document.getElementById('gameOverScreen').style.display = 'flex'; return;
+        }
+
+        let now = performance.now();
+        let dt = now - lastTickTime;
+        lastTickTime = now;
+        
+        gameState.elapsedTimeMs += dt;
+        let timeInfo = getTimeInfo();
+
+        // UI 갱신
+        let timeStr = `Day ${timeInfo.dayNumber} - ${timeInfo.isNight ? (timeInfo.isFogDay ? '🔴 안개의 밤' : '🌙 밤') : '☀️ 낮'}`;
+        document.getElementById('timeUi').innerText = timeStr;
+        document.getElementById('btnShelter').style.display = timeInfo.isFogDay ? 'block' : 'none';
+
+        // 백그라운드 저장 (5초마다)
+        saveTimer += dt;
+        if (saveTimer > 5000) { saveGame(); saveTimer = 0; }
+
+        // 태양광 발전 (매 프레임 미세하게 차오름, 30분에 10)
+        gameState.fuel = Math.min(gameState.maxFuel, gameState.fuel + (dt / CYCLE_MS) * 10);
+
+        // 플레이어 이동 (곡선에 맞춰 차량 내부로 제한)
+        let c1x = getTrackX(250); let c1y = 250;
+        let c2x = getTrackX(410); let c2y = 410; // 칸 간격 160
+        
+        if (joy.active) {
+            let dx = (joy.stickX - joy.baseX) / joy.radius;
+            let dy = (joy.stickY - joy.baseY) / joy.radius;
+            player.x += dx * player.speed; player.y += dy * player.speed;
+        }
+
+        // 칸 이동(위아래 통로) 로직 및 충돌 방지
+        let currentCarX = player.car === 1 ? c1x : c2x;
+        let currentCarY = player.car === 1 ? c1y : c2y;
+        
+        player.x = Math.max(currentCarX - trainW/2 + player.radius, Math.min(currentCarX + trainW/2 - player.radius, player.x));
+        
+        if (player.car === 1 && player.y > c1y + trainH/2 - 10) { player.car = 2; player.y = c2y - trainH/2 + 10; }
+        else if (player.car === 2 && player.y < c2y - trainH/2 + 10) { player.car = 1; player.y = c1y + trainH/2 - 10; }
+        
+        player.y = Math.max(currentCarY - trainH/2 + player.radius, Math.min(currentCarY + trainH/2 - player.radius, player.y));
+
+        // 기차 이동
+        if (isMoving && gameState.fuel > 0) {
+            if (trainSpeed < maxSpeed) trainSpeed += acceleration;
+            gameState.fuel -= 0.05;
+        } else {
+            isMoving = false;
+            if (trainSpeed > 0) { trainSpeed -= inertia; if (trainSpeed < 0.1) trainSpeed = 0; }
+        }
+
+        if (trainSpeed > 0) {
+            scrollY += trainSpeed;
+            scenery.forEach(t => t.y += trainSpeed);
+            scenery = scenery.filter(t => t.y < HEIGHT + 50);
+            while (scenery.length < 20) spawnTree(Math.random() * -50 - 10);
+            if (station) { station.y += trainSpeed; if (station.y > HEIGHT + 100) station = null; }
+        }
+
+        // 정거장 자연 출현 (5초마다)
+        if (trainSpeed > 0 && !station && Math.random() < 0.003) {
+            let type = Math.random() < 0.2 ? '대규모 구역' : '소규모 구역';
+            station = { name: type, y: -200, h: type === '대규모 구역'? 140 : 100, type: 'normal' };
+        }
+
+        // 좀비 스폰 및 공격 (밤에만)
+        if (timeInfo.isNight && !isSafeZone) {
+            let spawnRate = timeInfo.isFogDay ? 6 : 2; // 초당 마리수
+            if (Math.random() < spawnRate / 60) {
+                zombies.push({ x: Math.random() < 0.5 ? -20 : WIDTH + 20, y: Math.random() * HEIGHT, lastAtk: 0 });
+            }
+        } else if (!timeInfo.isNight) {
+            zombies = []; // 낮이 되면 증발
+        }
+
+        zombies.forEach(z => {
+            z.y += trainSpeed; // 배경과 함께 스크롤
+            let d1 = Math.hypot(z.x - c1x, z.y - c1y);
+            let d2 = Math.hypot(z.x - c2x, z.y - c2y);
+            let targetX = d1 < d2 ? c1x : c2x;
+            let targetY = d1 < d2 ? c1y : c2y;
+            
+            let dx = targetX - z.x; let dy = targetY - z.y;
+            let dist = Math.hypot(dx, dy);
+            
+            if (dist > trainW/2 + 5) {
+                z.x += (dx/dist) * 1.5; z.y += (dy/dist) * 1.5;
+            } else {
+                if (now - z.lastAtk > 2000) {
+                    gameState.trainHp -= 0.5; z.lastAtk = now;
+                }
+            }
+        });
+        zombies = zombies.filter(z => z.y < HEIGHT + 100 && z.y > -100);
+    }
+
+    // --- 그리기 루프 ---
+    function draw() {
+        ctx.clearRect(0, 0, WIDTH, HEIGHT);
+
+        // 1. 철로 (곡선)
+        ctx.lineWidth = 10; ctx.strokeStyle = "#505050";
+        ctx.beginPath();
+        for (let y = -50; y < HEIGHT + 50; y += 20) {
+            let tx = getTrackX(y);
+            if (y === -50) ctx.moveTo(tx - 30, y); else ctx.lineTo(tx - 30, y);
+        }
+        ctx.stroke();
+        ctx.beginPath();
+        for (let y = -50; y < HEIGHT + 50; y += 20) {
+            let tx = getTrackX(y);
+            if (y === -50) ctx.moveTo(tx + 30, y); else ctx.lineTo(tx + 30, y);
+        }
+        ctx.stroke();
+        
+        ctx.strokeStyle = "#8B4513"; ctx.lineWidth = 8;
+        let tieSpacing = 40; let offset = Math.floor(scrollY) % tieSpacing;
+        for (let y = -tieSpacing + offset; y < HEIGHT; y += tieSpacing) {
+            let tx = getTrackX(y);
+            ctx.beginPath(); ctx.moveTo(tx - 40, y); ctx.lineTo(tx + 40, y); ctx.stroke();
+        }
+
+        // 2. 배경 나무
+        ctx.fillStyle = "#146414";
+        scenery.forEach(t => { ctx.beginPath(); ctx.ellipse(t.x, t.y, t.w/2, t.h/2, 0, 0, Math.PI * 2); ctx.fill(); });
+
+        // 3. 정거장 가이드
+        if (station) {
+            let sx = getTrackX(station.y + station.h/2);
+            ctx.fillStyle = station.type === 'shelter' ? "#4444ff" : "#c89632";
+            ctx.fillRect(sx - 70, station.y, 140, station.h);
+            ctx.fillStyle = "#FFF"; ctx.font = "bold 14px sans-serif";
+            ctx.fillText(station.name, sx - 60, station.y + 20);
+        }
+
+        // 4. 기차 그리기 (구불구불 연결)
+        let c1x = getTrackX(250); let c1y = 250;
+        let c2x = getTrackX(410); let c2y = 410;
+        
+        // 연결 부위
+        ctx.lineWidth = 15; ctx.strokeStyle = "#333";
+        ctx.beginPath(); ctx.moveTo(c1x, c1y); ctx.lineTo(c2x, c2y); ctx.stroke();
+
+        // 1번 칸 (조종실 & 캠핑카 내부)
+        ctx.save(); ctx.translate(c1x, c1y);
+        ctx.fillStyle = "#787878"; ctx.fillRect(-trainW/2, -trainH/2, trainW, trainH);
+        ctx.fillStyle = "#3296FF"; ctx.fillRect(-trainW/2, -trainH/2, trainW, 40); // 조종판
+        ctx.fillStyle = "#8b5a2b"; ctx.fillRect(-trainW/2 + 5, trainH/2 - 45, 30, 40); // 침대
+        ctx.fillStyle = "#aaa"; ctx.fillRect(trainW/2 - 35, 10, 30, 40); // 주방/테이블
+        ctx.restore();
+
+        // 2번 칸 (연료 제작실 & 태양광 패널)
+        ctx.save(); ctx.translate(c2x, c2y);
+        ctx.fillStyle = "#666"; ctx.fillRect(-trainW/2, -trainH/2, trainW, trainH);
+        // 태양광 패널 무늬
+        ctx.fillStyle = "#1e90ff";
+        for (let i = -trainW/2 + 10; i < trainW/2 - 10; i += 20) {
+            for (let j = -trainH/2 + 10; j < trainH/2 - 10; j += 20) {
+                ctx.fillRect(i, j, 15, 15);
+            }
+        }
+        ctx.restore();
+
+        // 5. 좀비 그리기
+        ctx.fillStyle = "#32CD32";
+        zombies.forEach(z => { ctx.beginPath(); ctx.arc(z.x, z.y, 6, 0, Math.PI * 2); ctx.fill(); });
+
+        // 6. 주차 및 탐색 버튼
+        let isParked = (!isMoving && trainSpeed === 0 && station && c1y >= station.y && c1y <= station.y + station.h);
+        if (isParked) {
+            ctx.fillStyle = "#FFD700"; ctx.fillRect(exploreBtn.x, exploreBtn.y, exploreBtn.w, exploreBtn.h);
+            ctx.fillStyle = "#000"; ctx.font = "bold 16px sans-serif";
+            ctx.fillText("🚪 열기", exploreBtn.x + 25, exploreBtn.y + 35);
+        }
+
+        // 7. 플레이어
+        ctx.fillStyle = "#FF3232"; ctx.beginPath(); ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2); ctx.fill();
+
+        // 8. 상단 UI (연료 및 체력바)
+        let hpRatio = gameState.trainHp / gameState.maxHp;
+        ctx.fillStyle = "red"; ctx.fillRect(10, 35, 150, 10);
+        ctx.fillStyle = "green"; ctx.fillRect(10, 35, 150 * hpRatio, 10);
+        
+        ctx.fillStyle = "#FFF"; ctx.font = "14px sans-serif";
+        ctx.fillText(`⛽연료: ${gameState.fuel.toFixed(1)} / ${gameState.maxFuel}`, 10, 65);
+        ctx.fillText(`HP: ${gameState.trainHp.toFixed(0)} / ${gameState.maxHp}`, 10, 30);
+
+        // 9. 조이스틱 및 액션 버튼
+        ctx.strokeStyle = "rgba(150, 150, 150, 0.8)"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(joy.baseX, joy.baseY, joy.radius, 0, Math.PI * 2); ctx.stroke();
+        ctx.fillStyle = "rgba(200, 200, 200, 0.8)";
+        ctx.beginPath(); ctx.arc(joy.stickX, joy.stickY, joy.radius * 0.5, 0, Math.PI * 2); ctx.fill();
+
+        let isNearControl = (player.car === 1 && player.y < c1y - trainH/2 + 50);
+        if (isNearControl) {
+            ctx.fillStyle = isMoving ? "#FF6464" : "#64FF64";
+            ctx.fillRect(actionBtn.x, actionBtn.y, actionBtn.w, actionBtn.h);
+            ctx.fillStyle = "#000"; ctx.font = "bold 18px sans-serif";
+            ctx.fillText(isMoving ? "브레이크" : "출발", actionBtn.x + 8, actionBtn.y + 50);
+        }
+
+        // 밤/안개 화면 필터 효과
+        let timeInfo = getTimeInfo();
+        if (timeInfo.isFogDay) {
+            ctx.fillStyle = "rgba(150, 0, 0, 0.3)"; ctx.fillRect(0, 0, WIDTH, HEIGHT);
+        } else if (timeInfo.isNight) {
+            ctx.fillStyle = "rgba(0, 0, 50, 0.4)"; ctx.fillRect(0, 0, WIDTH, HEIGHT);
+        }
+    }
+
+    function gameLoop() { update(); draw(); requestAnimationFrame(gameLoop); }
+    gameLoop();
+</script>
+</body>
+</html>
