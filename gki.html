@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>좀비 아포칼립스 무한 열차 (Pure Graphics)</title>
+    <style>
+        * { box-sizing: border-box; user-select: none; }
+        body {
+            margin: 0; padding: 0; background-color: #111;
+            display: flex; justify-content: center; align-items: center;
+            height: 100vh; overflow: hidden; touch-action: none;
+            font-family: 'Malgun Gothic', sans-serif;
+        }
+        #gameContainer {
+            position: relative; width: 400px; height: 700px;
+            overflow: hidden; background: #223322; 
+        }
+        canvas { width: 100%; height: 100%; display: block; }
+        
+        .overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85); display: none; flex-direction: column;
+            justify-content: center; align-items: center; color: white; z-index: 20;
+        }
+        .menu-box {
+            background: #2a2a2a; padding: 18px; border-radius: 12px; width: 85%;
+            border: 2px solid #555; max-height: 80%; overflow-y: auto;
+        }
+        .btn {
+            background: #4a90e2; border: none; padding: 10px; margin: 6px 0;
+            width: 100%; border-radius: 6px; color: white; font-weight: bold;
+            font-size: 14px; cursor: pointer;
+        }
+        .btn:active { background: #357abd; }
+        
+        #btnMenu {
+            position: absolute; top: 10px; right: 10px;
+            background: #e67e22; border: none; padding: 8px 12px;
+            border-radius: 6px; color: white; font-weight: bold; z-index: 5;
+        }
+        #shelterBtn {
+            position: absolute; top: 60px; right: 10px;
+            background: #8e44ad; border: none; padding: 8px 12px;
+            border-radius: 6px; color: white; font-weight: bold; z-index: 5; display: none;
+        }
+        .alert-banner {
+            position: absolute; top: 100px; width: 100%; text-align: center;
+            font-weight: bold; font-size: 16px; pointer-events: none; z-index: 4;
+            text-shadow: 1px 1px 3px black;
+        }
+    </style>
+</head>
+<body>
+
+<div id="gameContainer">
+    <canvas id="gameCanvas" width="400" height="700"></canvas>
+    
+    <div id="statusAlert" class="alert-banner"></div>
+    <button id="btnMenu" onclick="openMenu()">업그레이드</button>
+    <button id="shelterBtn" onclick="evacuateToShelter()">피난처 이동 (연료 500)</button>
+
+    <div id="upgradeModal" class="overlay">
+        <div class="menu-box">
+            <h3 style="margin-top:0; text-align:center; color:#f39c12;">기차 업그레이드</h3>
+            <div id="resSummary" style="font-size:12px; margin-bottom:12px; color:#bbb;"></div>
+            <button class="btn" onclick="upgrade('fuelCap')">최대 연료통 확장 (+200)<br><small>나무 20, 철 10</small></button>
+            <button class="btn" onclick="upgrade('eff')">연비 개선 (소모율 10% 감소)<br><small>돌 20, 철 15</small></button>
+            <button class="btn" onclick="upgrade('repair')">기차 수리 (+2000 HP)<br><small>철 20, 나무 10</small></button>
+            <button class="btn" style="background:#7f8c8d;" onclick="closeMenu()">닫기</button>
+        </div>
+    </div>
+
+    <div id="gameOverModal" class="overlay">
+        <h1 style="color:#e74c3c; margin-bottom:10px;">기차 완파</h1>
+        <p>좀비 무리에게 방어선이 뚫렸습니다.</p>
+        <button class="btn" style="width:60%;" onclick="resetGame()">새 기차로 재시작</button>
+    </div>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+const WIDTH = 400, HEIGHT = 700;
+const CYCLE_SEC = 1800; 
+
+// 상태 데이터
+let state = {
+    trainHP: 10000, maxTrainHP: 10000,
+    fuel: 300, maxFuel: 300, fuelEfficiency: 1.0,
+    wood: 10, stone: 10, iron: 10, food: 5,
+    worldTime: 0, dayCount: 1,
+    isNight: false, isFogDay: false, fogTraumaBoost: false,
+    lastSaved: Date.now()
+};
+
+let trackPath = [];
+let trainHeadDist = 1000; 
+let trackStep = 5;
+let tailD = 0, tailX = 0, tailY = 0, currentTrackAngle = 0, targetTrackAngle = 0;
+let trees = [];
+let station = null;
+let movingTimeCounter = 0; 
+let pendingTurns = 0;
+
+function getTrackPoint(targetD) {
+    if (trackPath.length === 0) return {x:0, y:0, a:0, d:0};
+    if (targetD <= trackPath[0].d) return trackPath[0];
+    if (targetD >= trackPath[trackPath.length-1].d) return trackPath[trackPath.length-1];
+
+    let l = 0, r = trackPath.length - 1;
+    while(l <= r) {
+        let m = (l + r) >> 1;
+        if (trackPath[m].d === targetD) return trackPath[m];
+        if (trackPath[m].d < targetD) l = m + 1;
+        else r = m - 1;
+    }
+    let p1 = trackPath[r], p2 = trackPath[l];
+    let t = (targetD - p1.d) / (p2.d - p1.d);
+    
+    let diff = p2.a - p1.a;
+    while(diff > Math.PI) diff -= Math.PI*2;
+    while(diff < -Math.PI) diff += Math.PI*2;
+    
+    return {
+        x: p1.x + (p2.x - p1.x) * t,
+        y: p1.y + (p2.y - p1.y) * t,
+        a: p1.a + diff * t,
+        d: targetD
+    };
+}
+
+function generateTrack() {
+    while (trackPath.length === 0 || tailD < trainHeadDist + 1500) {
+        if (pendingTurns > 0 && targetTrackAngle === currentTrackAngle && !station) {
+            let r = Math.random();
+            if (r < 0.5) targetTrackAngle += Math.PI/2; 
+            else targetTrackAngle -= Math.PI/2;
+            pendingTurns--;
+        }
+
+        if (currentTrackAngle !== targetTrackAngle) {
+            let diff = targetTrackAngle - currentTrackAngle;
+            while(diff > Math.PI) diff -= Math.PI*2;
+            while(diff < -Math.PI) diff += Math.PI*2;
+            
+            let turnRate = 0.008; 
+            if (Math.abs(diff) < turnRate) currentTrackAngle = targetTrackAngle;
+            else currentTrackAngle += Math.sign(diff) * turnRate;
+        }
+
+        tailX += Math.sin(currentTrackAngle) * trackStep;
+        tailY -= Math.cos(currentTrackAngle) * trackStep;
+        tailD += trackStep;
+        trackPath.push({d: tailD, x: tailX, y: tailY, a: currentTrackAngle});
+
+        if (Math.random() < 0.05) { 
+            trees.push({d: tailD, side: Math.random() < 0.5 ? 1 : -1, offset: 90 + Math.random()*200});
+        }
+    }
+    while (trackPath.length > 0 && trackPath[0].d < trainHeadDist - 1000) {
+        trackPath.shift();
+    }
+    trees = trees.filter(t => t.d > trainHeadDist - 1000);
+}
+
+trackPath.push({d: 0, x: 0, y: 0, a: 0});
+generateTrack();
+
+const CAR_LEN = 130, CAR_W = 90;
+const TRAIN_TOTAL_LEN = 280; 
+let trainSpeed = 0.0;
+const MAX_SPEED = 7.0, ACCEL = 0.2, BRAKE_DECEL = MAX_SPEED / 60;
+let isMoving = false;
+
+let player = { localD: 65, localX: 0, speed: 4.0, worldX: 0, worldY: 0 };
+let zombies = [];
+let lastZombieSpawn = 0;
+let isShelterSafe = false;
+
+let joy = { baseX: 70, baseY: 610, stickX: 70, stickY: 610, radius: 40, active: false, id: null };
+let actionBtn = { x: WIDTH - 95, y: 565, w: 75, h: 75 };
+let exploreBtn = { x: WIDTH/2 - 60, y: 150, w: 120, h: 50 }; 
+
+function loadGame() {
+    const saved = localStorage.getItem('zt_save_pure');
+    if (saved) { try { Object.assign(state, JSON.parse(saved)); } catch (e) {} }
+    
+    // 로드 직후 체력이 0이면 즉시 게임오버 모달 노출
+    if (state.trainHP <= 0) {
+        document.getElementById('gameOverModal').style.display = 'flex';
+    }
+}
+function saveGame() {
+    state.lastSaved = Date.now();
+    localStorage.setItem('zt_save_pure', JSON.stringify(state));
+}
+function resetGame() { localStorage.removeItem('zt_save_pure'); location.reload(); }
+
+canvas.addEventListener('pointerdown', (e) => {
+    const r = canvas.getBoundingClientRect();
+    const x = (e.clientX - r.left) * (WIDTH / r.width);
+    const y = (e.clientY - r.top) * (HEIGHT / r.height);
+
+    let isParked = checkStationOverlap();
+    if (isParked && x >= exploreBtn.x && x <= exploreBtn.x + exploreBtn.w && y >= exploreBtn.y && y <= exploreBtn.y + exploreBtn.h) {
+        exploreStation(); return;
+    }
+
+    if (player.localD < 50 && x >= actionBtn.x && x <= actionBtn.x + actionBtn.w && y >= actionBtn.y && y <= actionBtn.y + actionBtn.h) {
+        if (!isMoving && state.fuel <= 0) { alert("연료가 없습니다!"); return; }
+        isMoving = !isMoving; if (isMoving) isShelterSafe = false;
+        return;
+    }
+
+    if (!joy.active && Math.hypot(x - joy.baseX, y - joy.baseY) <= joy.radius * 1.6) {
+        joy.active = true; joy.id = e.pointerId; moveJoystick(x, y);
+    }
+});
+
+canvas.addEventListener('pointermove', (e) => {
+    if (joy.active && e.pointerId === joy.id) {
+        const r = canvas.getBoundingClientRect();
+        moveJoystick((e.clientX - r.left) * (WIDTH / r.width), (e.clientY - r.top) * (HEIGHT / r.height));
+    }
+});
+
+function endPointer(e) {
+    if (joy.id === e.pointerId) {
+        joy.active = false; joy.stickX = joy.baseX; joy.stickY = joy.baseY; joy.id = null;
+    }
+}
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
+
+function moveJoystick(x, y) {
+    const dx = x - joy.baseX, dy = y - joy.baseY;
+    const d = Math.hypot(dx, dy);
+    if (d > joy.radius) {
+        joy.stickX = joy.baseX + (dx / d) * joy.radius;
+        joy.stickY = joy.baseY + (dy / d) * joy.radius;
+    } else {
+        joy.stickX = x; joy.stickY = y;
+    }
+}
+
+let lastFrameTime = performance.now();
+let solarTimer = 0;
+let lastStationSpawnCheck = 0;
+
+function update() {
+    const now = performance.now();
+    const dt = (now - lastFrameTime) / 1000;
+    lastFrameTime = now;
+
+    // 체력이 0이어도 카메라(플레이어 좌표) 업데이트는 무조건 실행하여 화면 이탈 방지
+    if (joy.active && state.trainHP > 0) {
+        const jx = (joy.stickX - joy.baseX) / joy.radius;
+        const jy = (joy.stickY - joy.baseY) / joy.radius;
+        let tryD = player.localD + jy * player.speed;
+        let tryX = player.localX + jx * player.speed;
+        tryD = Math.max(10, Math.min(TRAIN_TOTAL_LEN - 10, tryD));
+        let maxW = (CAR_W / 2) - player.radius - 2; 
+        if (tryD > CAR_LEN && tryD < CAR_LEN + 20) { maxW = 15; }
+        tryX = Math.max(-maxW, Math.min(maxW, tryX));
+        player.localD = tryD; player.localX = tryX;
+    }
+
+    let pTrack = getTrackPoint(trainHeadDist - player.localD);
+    player.worldX = pTrack.x + Math.cos(pTrack.a) * player.localX;
+    player.worldY = pTrack.y + Math.sin(pTrack.a) * player.localX;
+
+    if (state.trainHP <= 0) {
+        document.getElementById('gameOverModal').style.display = 'flex';
+        return; // 좌표 구한 뒤 여기서 로직 멈춤
+    }
+
+    state.worldTime += dt;
+    const halfCycles = Math.floor(state.worldTime / CYCLE_SEC);
+    state.isNight = (halfCycles % 2) === 1;
+    const currentDay = Math.floor(halfCycles / 2) + 1;
+    if (currentDay !== state.dayCount) {
+        state.fogTraumaBoost = state.isFogDay;
+        state.dayCount = currentDay;
+    }
+    state.isFogDay = state.isNight && (state.dayCount % 7 === 0);
+    document.getElementById('shelterBtn').style.display = (state.isFogDay && !isShelterSafe) ? 'block' : 'none';
+
+    solarTimer += dt;
+    if (solarTimer >= CYCLE_SEC) {
+        solarTimer = 0; state.fuel = Math.min(state.maxFuel, state.fuel + 10);
+    }
+
+    if (isMoving) {
+        if (trainSpeed < MAX_SPEED) trainSpeed += ACCEL;
+        state.fuel -= (0.04 * state.fuelEfficiency);
+        if (state.fuel <= 0) { state.fuel = 0; isMoving = false; }
+    } else {
+        if (trainSpeed > 0) {
+            trainSpeed -= BRAKE_DECEL;
+            if (trainSpeed < 0.05) trainSpeed = 0;
+        }
+    }
+
+    if (trainSpeed > 0) {
+        trainHeadDist += trainSpeed;
+        movingTimeCounter += dt;
+        if (movingTimeCounter >= 60) {
+            movingTimeCounter = 0; pendingTurns++;
+        }
+        generateTrack();
+    }
+
+    if (isMoving && !station && targetTrackAngle === currentTrackAngle && (now - lastStationSpawnCheck > 5000)) {
+        lastStationSpawnCheck = now;
+        if (Math.random() < 0.3) {
+            let isLarge = Math.random() < 0.15;
+            station = {
+                d: trainHeadDist + 1000, side: Math.random() < 0.5 ? 1 : -1,
+                name: isLarge ? "대규모 마트" : "소규모 주유소",
+                type: isLarge ? "large" : "small", len: isLarge ? 140 : 90
+            };
+        }
+    }
+
+    if (state.isNight && !isShelterSafe) {
+        const spawnRate = state.isFogDay ? (1000 / 6) : (1000 / 2);
+        if (now - lastZombieSpawn > spawnRate && zombies.length < 35) {
+            lastZombieSpawn = now;
+            let angle = Math.random() * Math.PI * 2;
+            zombies.push({
+                x: player.worldX + Math.cos(angle) * 350,
+                y: player.worldY + Math.sin(angle) * 350,
+                speed: 1.5 + Math.random(), lastAttack: 0
+            });
+        }
+    }
+
+    for (let i = zombies.length - 1; i >= 0; i--) {
+        const z = zombies[i];
+        const angle = Math.atan2(player.worldY - z.y, player.worldX - z.x);
+        z.x += Math.cos(angle) * z.speed; z.y += Math.sin(angle) * z.speed;
+
+        if (Math.hypot(player.worldX - z.x, player.worldY - z.y) < 80) {
+            if (now - z.lastAttack >= 2000) {
+                z.lastAttack = now;
+                state.trainHP -= 0.5;
+            }
+        }
+        if (!state.isNight || isShelterSafe) zombies.splice(i, 1);
+    }
+
+    const alertBox = document.getElementById('statusAlert');
+    if (state.isFogDay) alertBox.innerHTML = `<span style="color:#e74c3c;">🌁 [7일차] 안개의 날! 좀비 급증!</span>`;
+    else if (state.isNight) alertBox.innerHTML = `<span style="color:#e67e22;">🌙 밤 (좀비 습격)</span>`;
+    else alertBox.innerHTML = `<span style="color:#2ecc71;">☀️ 낮 (안전)</span>`;
+}
+
+function checkStationOverlap() {
+    if (!station || isMoving || trainSpeed > 0) return false;
+    const trainFront = trainHeadDist;
+    const trainBack = trainHeadDist - TRAIN_TOTAL_LEN;
+    const stFront = station.d + station.len / 2;
+    const stBack = station.d - station.len / 2;
+    return (trainFront >= stBack && trainBack <= stFront);
+}
+
+function evacuateToShelter() {
+    if (state.fuel < 500) { alert("연료(500)가 부족합니다!"); return; }
+    state.fuel -= 500; isMoving = false; trainSpeed = 0; isShelterSafe = true; zombies = [];
+    alert("피난처에 정차했습니다. 이번 안개의 날은 무사히 지나갑니다.");
+}
+
+function exploreStation() {
+    const gainedFuel = Math.floor(Math.random() * 21) + 20;
+    state.fuel = Math.min(state.maxFuel, state.fuel + gainedFuel);
+    state.wood += 8; state.stone += 6; state.iron += 4;
+    
+    let msg = `[${station.name}] 파밍 완료!\n연료 +${gainedFuel} | 기타 자원 획득\n`;
+
+    const chance = station.type === 'large' ? 0.30 : 0.02;
+    if (Math.random() < chance) {
+        const biteRate = state.fogTraumaBoost ? 0.80 : 0.25;
+        const isBitten = Math.random() < biteRate;
+        const trauma = isBitten ? "보랏빛 '물림 자국'" : "가벼운 찰과상";
+        
+        if (confirm(`${msg}\n생존자 발견! 외상: ${trauma}\n열차에 태우시겠습니까?`)) {
+            if (isBitten) {
+                state.trainHP -= 2000; alert("생존자가 변이하여 기차가 부서졌습니다! (-2000 HP)");
+            } else {
+                state.fuelEfficiency *= 0.98; alert("생존자 구출! 연비가 개선됩니다.");
+            }
+        }
+    } else { alert(msg); }
+    station = null;
+}
+
+function draw() {
+    ctx.clearRect(0, 0, WIDTH, HEIGHT);
+    ctx.save();
+    ctx.translate(WIDTH/2 - player.worldX, HEIGHT/2 - player.worldY);
+
+    // 기본 배경색
+    ctx.fillStyle = "#223322";
+    ctx.fillRect(player.worldX - WIDTH/2, player.worldY - HEIGHT/2, WIDTH, HEIGHT);
+
+    ctx.lineWidth = 6; ctx.strokeStyle = "#444";
+    ctx.beginPath();
+    for (let i = 0; i < trackPath.length; i++) {
+        let p = trackPath[i];
+        let lx = p.x + Math.cos(p.a) * -25, ly = p.y + Math.sin(p.a) * -25;
+        if (i===0) ctx.moveTo(lx, ly); else ctx.lineTo(lx, ly);
+    }
+    ctx.stroke();
+    
+    ctx.beginPath();
+    for (let i = 0; i < trackPath.length; i++) {
+        let p = trackPath[i];
+        let rx = p.x + Math.cos(p.a) * 25, ry = p.y + Math.sin(p.a) * 25;
+        if (i===0) ctx.moveTo(rx, ry); else ctx.lineTo(rx, ry);
+    }
+    ctx.stroke();
+
+    ctx.lineWidth = 4; ctx.strokeStyle = "#5c3a21";
+    for (let i = 0; i < trackPath.length; i+=8) {
+        let p = trackPath[i];
+        let lx = p.x + Math.cos(p.a) * -30, ly = p.y + Math.sin(p.a) * -30;
+        let rx = p.x + Math.cos(p.a) * 30, ry = p.y + Math.sin(p.a) * 30;
+        ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(rx, ry); ctx.stroke();
+    }
+
+    ctx.fillStyle = "#1e5c2d";
+    for(let t of trees) {
+        let p = getTrackPoint(t.d);
+        let tx = p.x + Math.cos(p.a) * (t.offset * t.side);
+        let ty = p.y + Math.sin(p.a) * (t.offset * t.side);
+        ctx.beginPath(); ctx.arc(tx, ty, 18, 0, Math.PI*2); ctx.fill();
+    }
+
+    if (station) {
+        let p = getTrackPoint(station.d);
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.a); 
+        
+        ctx.fillStyle = "#d35400";
+        let yOff = station.side === 1 ? 50 : -90 - station.len; 
+        let xOff = station.side === 1 ? 40 : -100;
+        
+        ctx.fillRect(-station.len/2, xOff, station.len, 70);
+        ctx.fillStyle = "#fff"; ctx.font = "bold 14px sans-serif";
+        ctx.fillText(station.name, -station.len/2 + 10, xOff + 25);
+        
+        ctx.strokeStyle = "#2ecc71"; ctx.lineWidth = 3; ctx.setLineDash([8, 8]);
+        ctx.strokeRect(-station.len/2, -40, station.len, 80);
+        ctx.restore();
+    }
+
+    // 도형 렌더링 버전 기차 내부 꾸미기 (순수 코드 그래픽)
+    drawCarBody(210, CAR_LEN, () => {
+        ctx.fillStyle = "#2c3e50"; ctx.fillRect(-CAR_W/2+5, 10, CAR_W-10, 30);
+        ctx.fillStyle = "#e67e22"; ctx.fillRect(-CAR_W/2+10, -50, 30, 40); 
+    });
+    drawCarBody(140, 20, () => {
+        ctx.fillStyle = "#555"; ctx.fillRect(-20, -10, 40, 20); 
+    });
+    drawCarBody(65, CAR_LEN, () => {
+        ctx.fillStyle = "#3498db"; ctx.fillRect(-CAR_W/2+5, 40, CAR_W-10, 20); 
+        ctx.fillStyle = "#9b59b6"; ctx.fillRect(-CAR_W/2+5, -50, 25, 45); 
+    });
+
+    function drawCarBody(localD, length, decoCb) {
+        let p = getTrackPoint(trainHeadDist - localD);
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.a);
+        
+        if(length > 50) { 
+            ctx.fillStyle = "#95a5a6"; ctx.fillRect(-CAR_W/2, -length/2, CAR_W, length);
+            ctx.strokeStyle = "#34495e"; ctx.lineWidth = 4; ctx.strokeRect(-CAR_W/2, -length/2, CAR_W, length);
+        }
+        if(decoCb) decoCb();
+        ctx.restore();
+    }
+
+    ctx.fillStyle = "#e74c3c";
+    ctx.beginPath(); ctx.arc(player.worldX, player.worldY, player.radius, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.stroke();
+
+    for (const z of zombies) {
+        ctx.fillStyle = "#27ae60";
+        ctx.beginPath(); ctx.arc(z.x, z.y, 7, 0, Math.PI*2); ctx.fill();
+    }
+
+    ctx.restore(); 
+
+    if (state.isFogDay) {
+        ctx.fillStyle = "rgba(180, 190, 200, 0.65)"; ctx.fillRect(0, 0, WIDTH, HEIGHT);
+    } else if (state.isNight) {
+        ctx.fillStyle = "rgba(10, 15, 30, 0.55)"; ctx.fillRect(0, 0, WIDTH, HEIGHT);
+    }
+
+    if (checkStationOverlap()) {
+        ctx.fillStyle = "#f1c40f"; ctx.fillRect(exploreBtn.x, exploreBtn.y, exploreBtn.w, exploreBtn.h);
+        ctx.fillStyle = "#000"; ctx.font = "bold 16px sans-serif";
+        ctx.fillText("🚪 구역 탐색", exploreBtn.x + 15, exploreBtn.y + 32);
+    }
+
+    ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(0, 0, WIDTH, 55);
+    ctx.fillStyle = "#fff"; ctx.font = "bold 12px sans-serif";
+    ctx.fillText(`🛡️열차 HP: ${state.trainHP.toFixed(0)} / ${state.maxTrainHP}`, 10, 20);
+    ctx.fillText(`⛽연료: ${state.fuel.toFixed(1)} / ${state.maxFuel}`, 10, 42);
+    ctx.fillStyle = "#f39c12";
+    ctx.fillText(`속도: ${(trainSpeed * 8).toFixed(0)} km/h`, 300, 42);
+
+    ctx.strokeStyle = "rgba(255,255,255,0.4)"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(joy.baseX, joy.baseY, joy.radius, 0, Math.PI*2); ctx.stroke();
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.beginPath(); ctx.arc(joy.stickX, joy.stickY, joy.radius * 0.4, 0, Math.PI*2); ctx.fill();
+
+    if (player.localD < 50) {
+        ctx.fillStyle = isMoving ? "#e74c3c" : "#2ecc71";
+        ctx.fillRect(actionBtn.x, actionBtn.y, actionBtn.w, actionBtn.h);
+        ctx.fillStyle = "#fff"; ctx.font = "bold 16px sans-serif";
+        ctx.fillText(isMoving ? "정지" : "출발", actionBtn.x + 22, actionBtn.y + 44);
+    }
+}
+
+function openMenu() {
+    document.getElementById('upgradeModal').style.display = 'flex';
+    document.getElementById('resSummary').innerHTML = `보유: 🪵나무 ${state.wood} | 🪨돌 ${state.stone} | ⚙️철 ${state.iron}`;
+}
+function closeMenu() { document.getElementById('upgradeModal').style.display = 'none'; }
+function upgrade(type) {
+    if (type === 'fuelCap' && state.wood >= 20 && state.iron >= 10) {
+        if (state.maxFuel >= 2000) { alert("최대치(2000) 도달."); return; }
+        state.wood -= 20; state.iron -= 10; state.maxFuel = Math.min(2000, state.maxFuel + 200);
+        alert("연료 탱크 확장!");
+    } else if (type === 'eff' && state.stone >= 20 && state.iron >= 15) {
+        state.stone -= 20; state.iron -= 15; state.fuelEfficiency *= 0.9;
+        alert("연비 개선!");
+    } else if (type === 'repair' && state.iron >= 20 && state.wood >= 10) {
+        state.iron -= 20; state.wood -= 10; state.trainHP = Math.min(state.maxTrainHP, state.trainHP + 2000);
+        alert("기차 수리 완료!");
+    } else { alert("자원이 부족합니다."); }
+    openMenu();
+}
+
+setInterval(saveGame, 5000);
+window.addEventListener('beforeunload', saveGame);
+loadGame();
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>
